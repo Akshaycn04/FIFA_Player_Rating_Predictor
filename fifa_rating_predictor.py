@@ -31,6 +31,9 @@ print(f"Number of players: {len(df)}")
 print(f"Rating range: {df['overall_rating'].min()} - {df['overall_rating'].max()}")
 
 # Select relevant features
+# ...existing code...
+
+# Update relevant_features by removing 'body_type'
 relevant_features = [
     'finishing', 'ball_control', 'dribbling', 'curve', 'freekick_accuracy',
     'long_passing', 'short_passing', 'volleys', 'crossing',
@@ -66,65 +69,97 @@ scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
-# Improved Binning Regressor
-class BinningRegressor:
+# Histogram Regressor
+class HistogramRegressor:
     def __init__(self, bin_size):
         self.bin_size = bin_size
-        self.bin_means = {}
-        self.centroids = None
+        self.histograms = {}
         self.feature_weights = None
+        self.bin_edges = None
+        self.bin_values = None
+        self.global_mean = None
         
     def fit(self, X, y):
         # Calculate feature weights based on correlation with the target
         feature_correlations = np.abs(np.array([np.corrcoef(X[:, i], y)[0, 1] for i in range(X.shape[1])]))
         self.feature_weights = feature_correlations / np.sum(feature_correlations)
         
-        # Apply weights to features
+        # Apply weights to features to create a projected feature
         X_weighted = X * self.feature_weights
+        projected_feature = np.sum(X_weighted, axis=1)
         
-        # Create bins based on weighted feature sums
-        weighted_sums = np.sum(X_weighted, axis=1)
-        sorted_indices = np.argsort(weighted_sums)
-        bin_size = len(y) // self.bin_size
+        # Create histogram bins
+        self.bin_edges = np.histogram_bin_edges(projected_feature, bins=self.bin_size)
         
-        # Store bin boundaries and means
-        self.bin_boundaries = []
-        for i in range(self.bin_size):
-            start_idx = i * bin_size
-            end_idx = (i + 1) * bin_size if i < self.bin_size - 1 else len(y)
-            bin_indices = sorted_indices[start_idx:end_idx]
-            
-            # Store bin information only if there are samples in the bin
-            if len(bin_indices) > 0:
-                if i > 0:  # Not the first bin
-                    self.bin_boundaries.append(weighted_sums[sorted_indices[start_idx]])
-                if i == self.bin_size - 1:  # Last bin
-                    self.bin_boundaries.append(float('inf'))
-                self.bin_means[i] = np.mean(y.iloc[bin_indices])
+        # Calculate mean target value for each bin
+        self.bin_values = np.zeros(len(self.bin_edges) - 1)
+        self.bin_counts = np.zeros(len(self.bin_edges) - 1)
+        
+        for i in range(len(projected_feature)):
+            bin_idx = np.digitize(projected_feature[i], self.bin_edges) - 1
+            if bin_idx >= len(self.bin_values):
+                bin_idx = len(self.bin_values) - 1
+            elif bin_idx < 0:
+                bin_idx = 0
                 
-                # Also store the centroid of this bin for better prediction
-                if i == 0:  # First bin
-                    self.bin_boundaries.insert(0, float('-inf'))
-                    
+            self.bin_values[bin_idx] += y.iloc[i]
+            self.bin_counts[bin_idx] += 1
+        
+        # Calculate mean for each bin, handle empty bins
+        for i in range(len(self.bin_values)):
+            if self.bin_counts[i] > 0:
+                self.bin_values[i] /= self.bin_counts[i]
+        
+        # For empty bins, use interpolation or global mean
+        self.global_mean = np.mean(y)
+        empty_bins = self.bin_counts == 0
+        if np.any(empty_bins):
+            if np.all(empty_bins):
+                self.bin_values = np.full_like(self.bin_values, self.global_mean)
+            else:
+                # Simple interpolation for empty bins
+                for i in range(len(self.bin_values)):
+                    if empty_bins[i]:
+                        # Find closest non-empty bins
+                        left = right = i
+                        while left >= 0 and empty_bins[left]:
+                            left -= 1
+                        while right < len(empty_bins) and empty_bins[right]:
+                            right += 1
+                        
+                        if left >= 0 and right < len(empty_bins):
+                            # Interpolate between left and right
+                            self.bin_values[i] = (self.bin_values[left] + self.bin_values[right]) / 2
+                        elif left >= 0:
+                            # Use left value
+                            self.bin_values[i] = self.bin_values[left]
+                        elif right < len(empty_bins):
+                            # Use right value
+                            self.bin_values[i] = self.bin_values[right]
+                        else:
+                            # Use global mean as fallback
+                            self.bin_values[i] = self.global_mean
+        
         return self
     
     def predict(self, X):
         # Apply same feature weighting
         X_weighted = X * self.feature_weights
-        weighted_sums = np.sum(X_weighted, axis=1)
-        predictions = []
+        projected_feature = np.sum(X_weighted, axis=1)
         
-        for sum_val in weighted_sums:
-            # Find which bin this sample falls into
-            for i in range(len(self.bin_boundaries) - 1):
-                if self.bin_boundaries[i] <= sum_val < self.bin_boundaries[i+1]:
-                    predictions.append(self.bin_means.get(i, np.mean(list(self.bin_means.values()))))
-                    break
-            else:
-                # If it doesn't fall into any bin (shouldn't happen), use the overall mean
-                predictions.append(np.mean(list(self.bin_means.values())))
+        # Predict using histogram bins
+        predictions = np.zeros(len(projected_feature))
+        
+        for i in range(len(projected_feature)):
+            bin_idx = np.digitize(projected_feature[i], self.bin_edges) - 1
+            if bin_idx >= len(self.bin_values):
+                bin_idx = len(self.bin_values) - 1
+            elif bin_idx < 0:
+                bin_idx = 0
                 
-        return np.array(predictions)
+            predictions[i] = self.bin_values[bin_idx]
+        
+        return predictions
 
 print("\nTraining models...")
 
@@ -148,7 +183,7 @@ def evaluate_model(y_true, y_pred, train_time, test_time):
 
 kf = KFold(n_splits=5, shuffle=True, random_state=42)
 
-# Test Binning Regressor
+# Test Histogram Regressor
 for bin_size in bin_sizes:
     fold_accuracies = []
     
@@ -156,7 +191,7 @@ for bin_size in bin_sizes:
         X_fold_train, X_fold_val = X_train_scaled[train_idx], X_train_scaled[val_idx]
         y_fold_train, y_fold_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
         
-        model = BinningRegressor(bin_size)
+        model = HistogramRegressor(bin_size)
         start_train = time.time()
         model.fit(X_fold_train, y_fold_train)
         train_time = time.time() - start_train
@@ -170,7 +205,7 @@ for bin_size in bin_sizes:
     
     avg_accuracy = np.mean(fold_accuracies)
     
-    model_final = BinningRegressor(bin_size)
+    model_final = HistogramRegressor(bin_size)
     start_train_final = time.time()
     model_final.fit(X_train_scaled, y_train)
     train_time_final = time.time() - start_train_final
@@ -180,7 +215,7 @@ for bin_size in bin_sizes:
     test_time_final = time.time() - start_test_final
     
     eval_results = evaluate_model(y_test, y_pred_final, train_time_final, test_time_final)
-    eval_results['model_type'] = 'Binning'
+    eval_results['model_type'] = 'Histogram'
     eval_results['param'] = bin_size
     results.append(eval_results)
 
@@ -191,10 +226,10 @@ best_model_idx = results_df['accuracy'].idxmax()
 best_model = results_df.iloc[best_model_idx]
 
 # Find best bin size details
-binning_results = results_df[results_df['model_type'] == 'Binning']
-best_bin_model = binning_results.loc[binning_results['accuracy'].idxmax()]
+histogram_results = results_df[results_df['model_type'] == 'Histogram']
+best_bin_model = histogram_results.loc[histogram_results['accuracy'].idxmax()]
 
-print("\nBest Binning Model Details:")
+print("\nBest Histogram Model Details:")
 print(f"Bin size: {best_bin_model['param']}")
 print(f"R² Score: {best_bin_model['r2']:.4f}")
 print(f"RMSE: {best_bin_model['rmse']:.4f}")
@@ -208,7 +243,7 @@ summary_df = results_df.sort_values('accuracy', ascending=False).head(10)
 # Visualization 1
 plt.figure(figsize=(15, 10))
 plt.subplot(2, 2, 1)
-plt.plot(binning_results['param'], binning_results['rmse'], marker='o', label='Binning')
+plt.plot(histogram_results['param'], histogram_results['rmse'], marker='o', label='Histogram')
 plt.xlabel('Bin Size')
 plt.ylabel('RMSE (lower is better)')
 plt.title('RMSE by Bin Size')
@@ -216,7 +251,7 @@ plt.legend()
 plt.grid(True, alpha=0.3)
 
 plt.subplot(2, 2, 2)
-plt.plot(binning_results['param'], binning_results['accuracy'], marker='o', label='Binning')
+plt.plot(histogram_results['param'], histogram_results['accuracy'], marker='o', label='Histogram')
 plt.xlabel('Bin Size')
 plt.ylabel('Accuracy (%)')
 plt.title('Accuracy by Bin Size')
@@ -224,7 +259,7 @@ plt.legend()
 plt.grid(True, alpha=0.3)
 
 plt.subplot(2, 2, 3)
-plt.plot(binning_results['param'], binning_results['train_time'], marker='o', label='Binning')
+plt.plot(histogram_results['param'], histogram_results['train_time'], marker='o', label='Histogram')
 plt.xlabel('Bin Size')
 plt.ylabel('Training Time (seconds)')
 plt.title('Training Time by Bin Size')
@@ -243,7 +278,7 @@ ax.set_ylabel('Accuracy (%)')
 ax2.set_ylabel('RMSE')
 ax.set_title('Top 10 Models: Accuracy vs RMSE')
 ax.set_xticks(index + bar_width / 2)
-ax.set_xticklabels([f"Binning({row['param']})" for _, row in summary_df.iterrows()], rotation=45)
+ax.set_xticklabels([f"Histogram({row['param']})" for _, row in summary_df.iterrows()], rotation=45)
 ax.legend(loc='upper left')
 ax2.legend(loc='upper right')
 plt.tight_layout()

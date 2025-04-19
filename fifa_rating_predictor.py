@@ -4,8 +4,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from sklearn.neighbors import KNeighborsRegressor
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+from sklearn.neighbors import KNeighborsRegressor
 import time
 import warnings
 warnings.filterwarnings('ignore')
@@ -22,6 +22,9 @@ print("-" * 60)
 print("Loading dataset...")
 df = pd.read_csv('fifa_players.csv')
 
+# Remove goalkeepers
+df = df[~df['positions'].str.startswith('GK')]
+
 # Display basic dataset information
 print(f"\nDataset shape: {df.shape}")
 print(f"Number of players: {len(df)}")
@@ -32,17 +35,14 @@ relevant_features = [
     'finishing', 'ball_control', 'dribbling', 'curve', 'freekick_accuracy',
     'long_passing', 'short_passing', 'volleys', 'crossing',
     'sprint_speed', 'acceleration', 'stamina', 'strength', 'jumping',
-    'agility', 'balance', 'reactions',
+    'agility', 'balance', 'reactions','international_reputation(1-5)', 'weak_foot(1-5)','skill_moves(1-5)',
     'vision', 'composure', 'penalties', 'positioning', 'interceptions',
-    'aggression',
-    'marking', 'standing_tackle', 'sliding_tackle',
+    'aggression', 'marking', 'standing_tackle', 'sliding_tackle',
     'shot_power', 'long_shots', 'heading_accuracy',
-    'age', 'weak_foot(1-5)', 'skill_moves(1-5)',
-    'value_euro', 'wage_euro',
-    'height_cm', 'weight_kgs',
-    'positioning', 'vision', 'penalties', 'composure',
-    'defensive_work_rate', 'attacking_work_rate'
+    'age','height_cm', 'weight_kgs'
 ]
+
+# ...rest of the code remains the same...
 available_features = [f for f in relevant_features if f in df.columns]
 print(f"\nUsing {len(available_features)} relevant features:")
 print(available_features)
@@ -66,49 +66,70 @@ scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
-# Custom Binning Regressor
+# Improved Binning Regressor
 class BinningRegressor:
     def __init__(self, bin_size):
         self.bin_size = bin_size
-        self.bins = {}
+        self.bin_means = {}
+        self.centroids = None
+        self.feature_weights = None
         
     def fit(self, X, y):
-        feature_sums = np.sum(X, axis=1)
-        min_sum = np.min(feature_sums)
-        max_sum = np.max(feature_sums)
-        bin_edges = np.linspace(min_sum, max_sum, self.bin_size + 1)
+        # Calculate feature weights based on correlation with the target
+        feature_correlations = np.abs(np.array([np.corrcoef(X[:, i], y)[0, 1] for i in range(X.shape[1])]))
+        self.feature_weights = feature_correlations / np.sum(feature_correlations)
         
+        # Apply weights to features
+        X_weighted = X * self.feature_weights
+        
+        # Create bins based on weighted feature sums
+        weighted_sums = np.sum(X_weighted, axis=1)
+        sorted_indices = np.argsort(weighted_sums)
+        bin_size = len(y) // self.bin_size
+        
+        # Store bin boundaries and means
+        self.bin_boundaries = []
         for i in range(self.bin_size):
-            lower = bin_edges[i]
-            upper = bin_edges[i + 1]
-            if i == self.bin_size - 1:
-                mask = (feature_sums >= lower) & (feature_sums <= upper)
-            else:
-                mask = (feature_sums >= lower) & (feature_sums < upper)
-            bin_indices = np.where(mask)[0]
+            start_idx = i * bin_size
+            end_idx = (i + 1) * bin_size if i < self.bin_size - 1 else len(y)
+            bin_indices = sorted_indices[start_idx:end_idx]
+            
+            # Store bin information only if there are samples in the bin
             if len(bin_indices) > 0:
-                self.bins[i] = np.mean(y.iloc[bin_indices])
-            else:
-                self.bins[i] = np.mean(y)
+                if i > 0:  # Not the first bin
+                    self.bin_boundaries.append(weighted_sums[sorted_indices[start_idx]])
+                if i == self.bin_size - 1:  # Last bin
+                    self.bin_boundaries.append(float('inf'))
+                self.bin_means[i] = np.mean(y.iloc[bin_indices])
+                
+                # Also store the centroid of this bin for better prediction
+                if i == 0:  # First bin
+                    self.bin_boundaries.insert(0, float('-inf'))
+                    
         return self
     
     def predict(self, X):
-        feature_sums = np.sum(X, axis=1)
-        min_sum = min(self.bins.keys())
-        max_sum = max(self.bins.keys())
-        bin_width = (max_sum - min_sum) / (self.bin_size - 1) if self.bin_size > 1 else 1
+        # Apply same feature weighting
+        X_weighted = X * self.feature_weights
+        weighted_sums = np.sum(X_weighted, axis=1)
         predictions = []
-        for sum_val in feature_sums:
-            bin_idx = min(max(int((sum_val - min_sum) / bin_width), 0), self.bin_size - 1)
-            predictions.append(self.bins.get(bin_idx, np.mean(list(self.bins.values()))))
+        
+        for sum_val in weighted_sums:
+            # Find which bin this sample falls into
+            for i in range(len(self.bin_boundaries) - 1):
+                if self.bin_boundaries[i] <= sum_val < self.bin_boundaries[i+1]:
+                    predictions.append(self.bin_means.get(i, np.mean(list(self.bin_means.values()))))
+                    break
+            else:
+                # If it doesn't fall into any bin (shouldn't happen), use the overall mean
+                predictions.append(np.mean(list(self.bin_means.values())))
+                
         return np.array(predictions)
 
 print("\nTraining models...")
 
-bin_sizes = [5, 10, 15, 20, 25, 30, 35, 40, 50]
-k_values = [1, 3, 5, 7, 9, 11, 15, 21, 31]
+bin_sizes = [5, 10, 15, 20, 25, 30, 35, 40, 50, 60, 70, 80, 90, 100]
 results = []
-model_types = ["Binning", "KNN"]
 
 def evaluate_model(y_true, y_pred, train_time, test_time):
     r2 = r2_score(y_true, y_pred)
@@ -125,15 +146,11 @@ def evaluate_model(y_true, y_pred, train_time, test_time):
         'predictions': y_pred
     }
 
-# KFold Cross Validation
 kf = KFold(n_splits=5, shuffle=True, random_state=42)
 
 # Test Binning Regressor
 for bin_size in bin_sizes:
     fold_accuracies = []
-    fold_predictions = []
-    fold_train_times = []
-    fold_test_times = []
     
     for train_idx, val_idx in kf.split(X_train_scaled):
         X_fold_train, X_fold_val = X_train_scaled[train_idx], X_train_scaled[val_idx]
@@ -150,9 +167,6 @@ for bin_size in bin_sizes:
         
         eval_results = evaluate_model(y_fold_val, y_pred, train_time, test_time)
         fold_accuracies.append(eval_results['accuracy'])
-        fold_predictions.append((val_idx, y_pred))
-        fold_train_times.append(train_time)
-        fold_test_times.append(test_time)
     
     avg_accuracy = np.mean(fold_accuracies)
     
@@ -170,63 +184,11 @@ for bin_size in bin_sizes:
     eval_results['param'] = bin_size
     results.append(eval_results)
 
-# Test KNN Regressor
-for k in k_values:
-    fold_accuracies = []
-    fold_predictions = []
-    fold_train_times = []
-    fold_test_times = []
-    
-    for train_idx, val_idx in kf.split(X_train_scaled):
-        X_fold_train, X_fold_val = X_train_scaled[train_idx], X_train_scaled[val_idx]
-        y_fold_train, y_fold_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
-        
-        model = KNeighborsRegressor(n_neighbors=k, weights='distance')
-        start_train = time.time()
-        model.fit(X_fold_train, y_fold_train)
-        train_time = time.time() - start_train
-        
-        start_test = time.time()
-        y_pred = model.predict(X_fold_val)
-        test_time = time.time() - start_test
-        
-        eval_results = evaluate_model(y_fold_val, y_pred, train_time, test_time)
-        fold_accuracies.append(eval_results['accuracy'])
-        fold_predictions.append((val_idx, y_pred))
-        fold_train_times.append(train_time)
-        fold_test_times.append(test_time)
-    
-    avg_accuracy = np.mean(fold_accuracies)
-    
-    model_final = KNeighborsRegressor(n_neighbors=k, weights='distance')
-    start_train_final = time.time()
-    model_final.fit(X_train_scaled, y_train)
-    train_time_final = time.time() - start_train_final
-    
-    start_test_final = time.time()
-    y_pred_final = model_final.predict(X_test_scaled)
-    test_time_final = time.time() - start_test_final
-    
-    eval_results = evaluate_model(y_test, y_pred_final, train_time_final, test_time_final)
-    eval_results['model_type'] = 'KNN'
-    eval_results['param'] = k
-    results.append(eval_results)
-
 results_df = pd.DataFrame(results)
 print("\nModel evaluation complete.")
 
 best_model_idx = results_df['accuracy'].idxmax()
 best_model = results_df.iloc[best_model_idx]
-
-print(f"\nBest model: {best_model['model_type']} with parameter={best_model['param']}")
-print(f"R² Score: {best_model['r2']:.4f}")
-print(f"RMSE: {best_model['rmse']:.4f}")
-print(f"MAE: {best_model['mae']:.4f}")
-print(f"Accuracy: {best_model['accuracy']:.2f}%")
-print(f"Training time: {best_model['train_time']:.4f} seconds")
-print(f"Testing time: {best_model['test_time']:.4f} seconds")
-
-# Add this after printing the best model results
 
 # Find best bin size details
 binning_results = results_df[results_df['model_type'] == 'Binning']
@@ -246,32 +208,26 @@ summary_df = results_df.sort_values('accuracy', ascending=False).head(10)
 # Visualization 1
 plt.figure(figsize=(15, 10))
 plt.subplot(2, 2, 1)
-for model_type in model_types:
-    model_data = results_df[results_df['model_type'] == model_type]
-    plt.plot(model_data['param'], model_data['rmse'], marker='o', label=model_type)
-plt.xlabel('Parameter Value (bin size or k)')
+plt.plot(binning_results['param'], binning_results['rmse'], marker='o', label='Binning')
+plt.xlabel('Bin Size')
 plt.ylabel('RMSE (lower is better)')
-plt.title('RMSE by Model Type and Parameter')
+plt.title('RMSE by Bin Size')
 plt.legend()
 plt.grid(True, alpha=0.3)
 
 plt.subplot(2, 2, 2)
-for model_type in model_types:
-    model_data = results_df[results_df['model_type'] == model_type]
-    plt.plot(model_data['param'], model_data['accuracy'], marker='o', label=model_type)
-plt.xlabel('Parameter Value (bin size or k)')
+plt.plot(binning_results['param'], binning_results['accuracy'], marker='o', label='Binning')
+plt.xlabel('Bin Size')
 plt.ylabel('Accuracy (%)')
-plt.title('Accuracy by Model Type and Parameter')
+plt.title('Accuracy by Bin Size')
 plt.legend()
 plt.grid(True, alpha=0.3)
 
 plt.subplot(2, 2, 3)
-for model_type in model_types:
-    model_data = results_df[results_df['model_type'] == model_type]
-    plt.plot(model_data['param'], model_data['train_time'], marker='o', label=model_type)
-plt.xlabel('Parameter Value (bin size or k)')
+plt.plot(binning_results['param'], binning_results['train_time'], marker='o', label='Binning')
+plt.xlabel('Bin Size')
 plt.ylabel('Training Time (seconds)')
-plt.title('Training Time by Model Type and Parameter')
+plt.title('Training Time by Bin Size')
 plt.legend()
 plt.grid(True, alpha=0.3)
 
@@ -287,7 +243,7 @@ ax.set_ylabel('Accuracy (%)')
 ax2.set_ylabel('RMSE')
 ax.set_title('Top 10 Models: Accuracy vs RMSE')
 ax.set_xticks(index + bar_width / 2)
-ax.set_xticklabels([f"{row['model_type']}({row['param']})" for _, row in summary_df.iterrows()], rotation=45)
+ax.set_xticklabels([f"Binning({row['param']})" for _, row in summary_df.iterrows()], rotation=45)
 ax.legend(loc='upper left')
 ax2.legend(loc='upper right')
 plt.tight_layout()

@@ -6,7 +6,7 @@ import seaborn as sns
 import time
 import warnings
 
-# Ignore warnings for clean output
+# Ignore warnings for clean outputs
 warnings.filterwarnings('ignore')
 
 # Import Scikit-learn modules

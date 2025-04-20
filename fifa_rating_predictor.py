@@ -6,7 +6,7 @@ import seaborn as sns
 import time
 import warnings
 
-# Ignore warnings for clean outputs
+# Ignore warnings for clean output
 warnings.filterwarnings('ignore')
 
 # Import Scikit-learn modules
@@ -25,7 +25,7 @@ class SmootherRegressor(BaseEstimator, RegressorMixin):
     def __init__(self, bin_width):
         self.bin_width = bin_width
         self.model = HistGradientBoostingRegressor(max_bins=255, random_state=42)
-        
+
     def fit(self, X, y):
         # Adjust features to match bin_width
         self.X_min = X.min(axis=0)
@@ -34,7 +34,7 @@ class SmootherRegressor(BaseEstimator, RegressorMixin):
         self.model.set_params(max_bins=self.n_bins.max())
         self.model.fit(X, y)
         return self
-    
+
     def predict(self, X):
         return self.model.predict(X)
 
@@ -44,7 +44,10 @@ print("-" * 60)
 
 # Load dataset
 print("Loading dataset...")
-df = pd.read_csv('fifa_players.csv')
+import kagglehub
+path = kagglehub.dataset_download("maso0dahmed/football-players-data")
+
+print("Path to dataset files:", path)
 
 # Remove goalkeepers (GK) as they have very different stats
 df = df[~df['positions'].str.startswith('GK')]
@@ -121,35 +124,35 @@ kf = KFold(n_splits=5, shuffle=True, random_state=42)
 # Loop through different bin widths
 for bin_width in bin_widths:
     fold_accuracies = []
-    
+
     for train_idx, val_idx in kf.split(X_train_scaled):
         X_fold_train, X_fold_val = X_train_scaled[train_idx], X_train_scaled[val_idx]
         y_fold_train, y_fold_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
-        
+
         model = SmootherRegressor(bin_width)
         start_train = time.time()
         model.fit(X_fold_train, y_fold_train)
         train_time = time.time() - start_train
-        
+
         start_test = time.time()
         y_pred = model.predict(X_fold_val)
         test_time = time.time() - start_test
-        
+
         eval_results = evaluate_model(y_fold_val, y_pred, train_time, test_time)
         fold_accuracies.append(eval_results['accuracy'])
-    
+
     avg_accuracy = np.mean(fold_accuracies)
-    
+
     # Train on full training set
     model_final = SmootherRegressor(bin_width)
     start_train_final = time.time()
     model_final.fit(X_train_scaled, y_train)
     train_time_final = time.time() - start_train_final
-    
+
     start_test_final = time.time()
     y_pred_final = model_final.predict(X_test_scaled)
     test_time_final = time.time() - start_test_final
-    
+
     eval_results = evaluate_model(y_test, y_pred_final, train_time_final, test_time_final)
     eval_results['model_type'] = 'Smoothed'
     eval_results['param'] = bin_width
@@ -273,6 +276,8 @@ plt.title('Top 5 Largest Prediction Errors')
 plt.grid(True, alpha=0.3)
 plt.tight_layout()
 
+plt.tight_layout()
+plt.show()
 # -----------------------------------
 # Print best/worst predictions
 # -----------------------------------
@@ -284,7 +289,6 @@ print("\nTop 5 Least Accurate Predictions:")
 worst_predictions = error_df.nlargest(5, 'Error')
 print(worst_predictions[['Player', 'Actual', 'Predicted', 'Error']].to_string(index=False))
 
-plt.tight_layout()
-plt.show()
+
 
 print("\nFIFA Player Rating Prediction Complete!")

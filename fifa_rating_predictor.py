@@ -108,12 +108,10 @@ def evaluate_model(y_true, y_pred, train_time, test_time):
     r2 = r2_score(y_true, y_pred)
     rmse = np.sqrt(mean_squared_error(y_true, y_pred))
     mae = mean_absolute_error(y_true, y_pred)
-    accuracy = 100 * (1 - np.mean(np.abs(y_true - y_pred) / y_true))
     return {
         'r2': r2,
         'rmse': rmse,
         'mae': mae,
-        'accuracy': accuracy,
         'train_time': train_time,
         'test_time': test_time,
         'predictions': y_pred
@@ -124,7 +122,7 @@ kf = KFold(n_splits=5, shuffle=True, random_state=42)
 
 # Loop through different bin widths
 for bin_width in bin_widths:
-    fold_accuracies = []
+    fold_rmses = []
 
     for train_idx, val_idx in kf.split(X_train_scaled):
         X_fold_train, X_fold_val = X_train_scaled[train_idx], X_train_scaled[val_idx]
@@ -140,9 +138,9 @@ for bin_width in bin_widths:
         test_time = time.time() - start_test
 
         eval_results = evaluate_model(y_fold_val, y_pred, train_time, test_time)
-        fold_accuracies.append(eval_results['accuracy'])
+        fold_rmses.append(eval_results['rmse'])
 
-    avg_accuracy = np.mean(fold_accuracies)
+    avg_rmse = np.mean(fold_rmses)
 
     # Train on full training set
     model_final = SmootherRegressor(bin_width)
@@ -163,8 +161,8 @@ for bin_width in bin_widths:
 results_df = pd.DataFrame(results)
 print("\nModel evaluation complete.")
 
-# Find the best model (highest accuracy)
-best_model_idx = results_df['accuracy'].idxmax()
+# Find the best model (lowest RMSE)
+best_model_idx = results_df['rmse'].idxmin()
 best_model = results_df.iloc[best_model_idx]
 
 # Display best model performance
@@ -173,12 +171,11 @@ print(f"Bin Width: {best_model['param']}")
 print(f"R² Score: {best_model['r2']:.4f}")
 print(f"RMSE: {best_model['rmse']:.4f}")
 print(f"MAE: {best_model['mae']:.4f}")
-print(f"Accuracy: {best_model['accuracy']:.2f}%")
 print(f"Training time: {best_model['train_time']:.4f} seconds")
 print(f"Testing time: {best_model['test_time']:.4f} seconds")
 
 # Show the top 10 models
-summary_df = results_df.sort_values('accuracy', ascending=False).head(10)
+summary_df = results_df.sort_values('rmse', ascending=True).head(10)
 
 # -----------------------------------
 # Visualization 1: Performance Metrics
@@ -193,38 +190,24 @@ plt.ylabel('RMSE (lower is better)')
 plt.title('RMSE by Bin Width')
 plt.grid(True, alpha=0.3)
 
-# Accuracy by Bin Width
-plt.subplot(2, 2, 2)
-plt.plot(results_df['param'], results_df['accuracy'], marker='o')
-plt.xlabel('Bin Width')
-plt.ylabel('Accuracy (%)')
-plt.title('Accuracy by Bin Width')
-plt.grid(True, alpha=0.3)
-
 # Training Time by Bin Width
-plt.subplot(2, 2, 3)
+plt.subplot(2, 2, 2)
 plt.plot(results_df['param'], results_df['train_time'], marker='o')
 plt.xlabel('Bin Width')
 plt.ylabel('Training Time (seconds)')
 plt.title('Training Time by Bin Width')
 plt.grid(True, alpha=0.3)
 
-# Top 10 models: Accuracy vs RMSE
-plt.subplot(2, 2, 4)
-ax = plt.gca()
+# Top 10 models: RMSE
+plt.subplot(2, 2, 3)
 bar_width = 0.35
 index = np.arange(len(summary_df))
-bar1 = ax.bar(index, summary_df['accuracy'], bar_width, label='Accuracy (%)')
-ax2 = ax.twinx()
-bar2 = ax2.bar(index + bar_width, summary_df['rmse'], bar_width, color='lightcoral', label='RMSE')
-ax.set_xlabel('Models')
-ax.set_ylabel('Accuracy (%)')
-ax2.set_ylabel('RMSE')
-ax.set_title('Top 10 Models: Accuracy vs RMSE')
-ax.set_xticks(index + bar_width / 2)
-ax.set_xticklabels([f"Width({row['param']})" for _, row in summary_df.iterrows()], rotation=45)
-ax.legend(loc='upper left')
-ax2.legend(loc='upper right')
+plt.bar(index, summary_df['rmse'], bar_width, color='lightcoral', label='RMSE')
+plt.xlabel('Models')
+plt.ylabel('RMSE')
+plt.title('Top 10 Models: RMSE')
+plt.xticks(index, [f"Width({row['param']})" for _, row in summary_df.iterrows()], rotation=45)
+plt.legend()
 plt.tight_layout()
 
 # -----------------------------------
